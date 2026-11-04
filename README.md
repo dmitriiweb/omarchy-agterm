@@ -1,6 +1,6 @@
 # agterm for Omarchy
 
-An unofficial Omarchy bar plugin for [agterm-linux](https://github.com/melonamin/agterm-linux) that shows agent status across open agterm workspaces and lets you focus an existing session. It is not affiliated with or endorsed by the Omarchy or agterm-linux projects. Inspired by the UX of [Herdr for Omarchy](https://github.com/carlotran4/omarchy-herdr).
+An unofficial Omarchy bar plugin for [agterm-linux](https://github.com/melonamin/agterm-linux) that shows agent status across open agterm workspaces and lets you focus an existing session. It is not affiliated with or endorsed by the Omarchy or agterm-linux projects.
 
 ## Features
 
