@@ -26,6 +26,8 @@ Panel {
   readonly property bool showIcon: vertical || setting("showIcon", true)
 
   property var state: ({ online: false, error: "Starting monitor", sessions: [], windowCount: 0 })
+  property string focusError: ""
+  property string focusStderr: ""
   readonly property bool online: state.online === true
   readonly property var sessions: state.sessions || []
   readonly property var visibleSessions: sortedVisibleSessions()
@@ -92,26 +94,43 @@ Panel {
     })
     return items
   }
-  function open() {
-    controller.show()
-    if (bar && typeof bar.requestPopout === "function") bar.requestPopout(root)
-  }
-  function close() {
-    controller.hide()
-    if (bar && typeof bar.releasePopout === "function") bar.releasePopout(root)
-  }
+  function open() { controller.show() }
+  function close() { controller.hide() }
   function toggle() { if (opened) close(); else open() }
   function refresh() {
     watcher.running = false
     restartTimer.restart()
   }
   function focus(session) {
-    if (!session || !session.windowId || !session.id) return
-    Quickshell.execDetached(["python3", bridgePath, "focus", session.windowId, session.id, "--cli", cliPath])
-    close()
+    if (focusProcess.running || !session || !session.windowId || !session.id) return
+    focusError = ""
+    focusStderr = ""
+    open()
+    focusProcess.command = ["python3", bridgePath, "focus", session.windowId, session.id, "--cli", cliPath]
+    focusProcess.running = true
   }
   function focusAttention() {
     if (sessions.length > 0) focus(sessions[0])
+  }
+
+  Process {
+    id: focusProcess
+    command: []
+    stderr: SplitParser {
+      onRead: function(line) {
+        root.focusStderr = (root.focusStderr + String(line)).slice(-280)
+      }
+    }
+    onExited: function(exitCode) {
+      root.focusProcess.running = false
+      if (exitCode === 0) {
+        root.close()
+        root.refresh()
+      } else {
+        var detail = root.focusStderr.trim()
+        root.focusError = "Could not focus session" + (detail ? ": " + detail : " (exit " + exitCode + ")")
+      }
+    }
   }
 
   Process {
@@ -124,7 +143,14 @@ Panel {
         catch (e) { root.state = { online: false, error: "Invalid monitor data", sessions: [] } }
       }
     }
-    onExited: restartTimer.restart()
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.state = Object.assign({}, root.state, {
+          eventWarning: "Monitor exited with code " + exitCode + "; restarting",
+        })
+      }
+      restartTimer.restart()
+    }
   }
   Timer {
     id: restartTimer
@@ -132,7 +158,6 @@ Panel {
     repeat: false
     onTriggered: watcher.running = true
   }
-
   Rectangle {
     id: button
     anchors.fill: parent
@@ -216,14 +241,21 @@ Panel {
     contentWidth: fittedContentWidth(Style.space(370))
     contentHeight: fittedContentHeight(panelContent.implicitHeight, Style.space(640))
 
+
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
       onActivateRequested: root.focusAttention()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-
+      onMoveRequested: function(dx, dy) {
+        if (dy === 0) return
+        var step = Math.max(Style.space(40), flickable.height * 0.75)
+        var maximum = Math.max(0, flickable.contentHeight - flickable.height)
+        flickable.contentY = Math.max(0, Math.min(maximum, flickable.contentY + dy * step))
+      }
       Flickable {
+        id: flickable
         anchors.fill: parent
         contentWidth: width
         contentHeight: panelContent.implicitHeight
@@ -352,6 +384,24 @@ Panel {
                 }
               }
             }
+          }
+          Text {
+            visible: !!root.focusError
+            width: parent.width
+            text: root.focusError
+            color: "#f7768e"
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WrapAnywhere
+          }
+          Text {
+            visible: !!(root.state.warning || root.state.eventWarning)
+            width: parent.width
+            text: [root.state.warning, root.state.eventWarning].filter(function(value) { return !!value }).join(" · ")
+            color: root.dim
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WrapAnywhere
           }
           Text {
             visible: root.online && root.visibleSessions.length === 0

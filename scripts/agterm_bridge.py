@@ -7,6 +7,7 @@ Only the explicit `focus` operation mutates GUI selection. Never executes shell 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,7 @@ import time
 
 
 SORT_RANK = {"blocked": 0, "completed": 1, "active": 2, "idle": 3}
-EVENT_KINDS = "status,notify,session.created,session.closed,session.selected,tree.changed"
+EVENT_KINDS = "status,notify,session.created,session.closed,tree.changed"
 REFRESH_INTERVAL_SECONDS = 20
 RETRY_SECONDS = 3
 CACHE_SUBDIR = "omarchy-agterm"
@@ -76,23 +77,42 @@ def load_usage() -> dict[str, float]:
 def save_usage(usage: dict[str, float]) -> None:
     path = cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(usage, ensure_ascii=False, separators=(",", ":")))
-    temp.replace(path)
+    with path.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        merged = load_usage()
+        for key, value in usage.items():
+            merged[key] = max(float(merged.get(key, 0) or 0), float(value))
+        selected: dict[str, tuple[str, float]] = {}
+        for key, value in merged.items():
+            if not key.startswith("@selected:"):
+                continue
+            prefix = key.rsplit(":", 1)[0]
+            if prefix not in selected or value > selected[prefix][1]:
+                selected[prefix] = (key, value)
+        for key in [key for key in merged if key.startswith("@selected:")]:
+            merged.pop(key)
+        merged.update({key: value for key, value in selected.values()})
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(merged, ensure_ascii=False, separators=(",", ":")))
+        temp.replace(path)
+        fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def record_usage(session_id: str, when: float | None = None, usage: dict[str, float] | None = None) -> dict[str, float]:
-    current = usage if usage is not None else load_usage()
-    current[session_id] = float(when if when is not None else time.time())
-    if usage is None:
-        save_usage(current)
-    return current
+def record_usage(session_id: str, when: float | None = None) -> dict[str, float]:
+    merged = load_usage()
+    merged[session_id] = max(float(merged.get(session_id, 0) or 0), float(when if when is not None else time.time()))
+    save_usage(merged)
+    return merged
 
 
 def call_ctl(cli: str, *args: str) -> dict:
+    command = [cli, *args]
+    socket = os.environ.get("AGTERM_SOCKET", "")
+    if socket:
+        command.extend(("--socket", socket))
     try:
         result = subprocess.run(
-            [cli, *args], capture_output=True, text=True,
+            command, capture_output=True, text=True,
             timeout=8, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -104,12 +124,16 @@ def call_ctl(cli: str, *args: str) -> dict:
     except json.JSONDecodeError as exc:
         raise AgtermError("Invalid agtermctl JSON response") from exc
     if not isinstance(response, dict) or not response.get("ok", False):
-        raise AgtermError(str(response.get("error", "agtermctl response not ok"))[:280])
-    return response.get("result", {})
+        error = response.get("error", "agtermctl response not ok") if isinstance(response, dict) else "agtermctl response not ok"
+        raise AgtermError(str(error)[:280])
+    result = response.get("result", {})
+    if not isinstance(result, dict):
+        raise AgtermError("agtermctl returned an unexpected result")
+    return result
 
 
 def session_timestamp(session: dict) -> float:
-    for key in ("lastUsedAt", "lastSelectedAt", "selectedAt", "updatedAt", "statusChangedAt"):
+    for key in ("lastUsedAt", "lastSelectedAt", "selectedAt"):
         value = session.get(key)
         try:
             stamp = float(value)
@@ -122,9 +146,7 @@ def session_timestamp(session: dict) -> float:
 
 def extract_sessions(windows: list[dict], trees: dict[str, dict], usage: dict[str, float] | None = None) -> list[dict]:
     sessions: list[dict] = []
-    usage_map = dict(usage or {})
-    usage_changed = False
-    now = time.time()
+    usage_map = usage or {}
     for window in windows:
         if not window.get("open"):
             continue
@@ -143,12 +165,14 @@ def extract_sessions(windows: list[dict], trees: dict[str, dict], usage: dict[st
                 status = str(session.get("status") or "idle").lower()
                 if status not in SORT_RANK:
                     status = "idle"
-                derived_last_used = max(session_timestamp(session), float(usage_map.get(session_id, 0) or 0))
-                active = bool(session.get("active", False))
-                if active and derived_last_used < now:
-                    derived_last_used = now
-                    usage_map[session_id] = derived_last_used
-                    usage_changed = True
+                try:
+                    unseen = int(session.get("unseen") or 0)
+                except (TypeError, ValueError):
+                    unseen = 0
+                try:
+                    changed_at = float(session.get("statusChangedAt") or 0)
+                except (TypeError, ValueError):
+                    changed_at = 0.0
                 sessions.append({
                     "id": session_id,
                     "windowId": window_id,
@@ -158,16 +182,11 @@ def extract_sessions(windows: list[dict], trees: dict[str, dict], usage: dict[st
                     "cwd": str(session.get("cwd") or ""),
                     "status": status,
                     "pane": str(session.get("statusPane") or ""),
-                    "active": active,
-                    "unseen": int(session.get("unseen") or 0),
-                    "changedAt": float(session.get("statusChangedAt") or 0),
-                    "lastUsedAt": derived_last_used,
+                    "active": bool(session.get("active", False)),
+                    "unseen": unseen,
+                    "changedAt": changed_at,
+                    "lastUsedAt": max(session_timestamp(session), float(usage_map.get(session_id, 0) or 0)),
                 })
-    if usage_changed:
-        try:
-            save_usage(usage_map)
-        except OSError:
-            pass
     sessions.sort(key=lambda s: (
         SORT_RANK[s["status"]],
         -s["changedAt"] if s["status"] in ("blocked", "completed") else 0,
@@ -179,27 +198,80 @@ def extract_sessions(windows: list[dict], trees: dict[str, dict], usage: dict[st
 
 
 def snapshot(cli: str) -> dict:
-    windows = call_ctl(cli, "window", "list", "--json").get("windows", [])
-    if not isinstance(windows, list):
+    windows_result = call_ctl(cli, "window", "list", "--json")
+    windows = windows_result.get("windows")
+    if not isinstance(windows, list) or any(not isinstance(window, dict) for window in windows):
         raise AgtermError("window.list returned an unexpected structure")
+    open_windows = [window for window in windows if window.get("open")]
     trees: dict[str, dict] = {}
-    for window in windows:
-        if not window.get("open"):
-            continue
+    errors: list[str] = []
+    for window in open_windows:
         window_id = str(window.get("id", ""))
         if not window_id:
+            errors.append("An open window has no id")
             continue
         try:
             tree = call_ctl(cli, "tree", "--json", "--window", window_id).get("tree")
-            if isinstance(tree, dict):
-                trees[window_id] = tree
-        except AgtermError:
-            continue
+            if (
+                not isinstance(tree, dict)
+                or not isinstance(tree.get("workspaces"), list)
+                or any(
+                    not isinstance(workspace, dict)
+                    or not isinstance(workspace.get("sessions", []), list)
+                    or any(not isinstance(session, dict) for session in workspace.get("sessions", []))
+                    for workspace in tree["workspaces"]
+                )
+            ):
+                raise AgtermError(f"Invalid tree response for window {window_id}")
+            trees[window_id] = tree
+        except AgtermError as exc:
+            errors.append(f"{window.get('name') or window_id}: {exc}")
+    if open_windows and not trees:
+        return {
+            "online": False,
+            "error": "; ".join(errors)[:280] or "Unable to read any open window trees",
+            "windowCount": 0,
+            "sessions": [],
+        }
+    usage = load_usage()
+    sessions = extract_sessions(windows, trees, usage)
+    now = time.time()
+    usage_changed = False
+    for window_id, tree in trees.items():
+        for workspace in tree["workspaces"]:
+            workspace_name = str(workspace.get("name") or "Workspace")
+            workspace_key = str(workspace.get("id") or workspace_name)
+            selected = next((s for s in workspace.get("sessions", []) if s.get("active") and s.get("content") != "page" and s.get("id")), None)
+            if selected is None:
+                continue
+            session_id = str(selected["id"])
+            selection_prefix = f"@selected:{window_id}:{workspace_key}:"
+            selected_key = f"{selection_prefix}{session_id}"
+            prior_keys = [key for key in usage if key.startswith(selection_prefix)]
+            if selected_key in usage:
+                continue
+            changed_selection = bool(prior_keys)
+            for key in prior_keys:
+                usage.pop(key, None)
+            usage[selected_key] = now
+            usage_changed = True
+            if not changed_selection and session_id not in usage and not session_timestamp(selected):
+                usage[session_id] = now
+            elif changed_selection:
+                usage[session_id] = max(float(usage.get(session_id, 0) or 0), now)
+    if usage_changed:
+        try:
+            save_usage(usage)
+        except OSError:
+            pass
+    for session in sessions:
+        session["lastUsedAt"] = max(session["lastUsedAt"], float(usage.get(session["id"], 0) or 0))
     return {
         "online": True,
         "error": "",
+        "warning": "; ".join(errors)[:280],
         "windowCount": len(trees),
-        "sessions": extract_sessions(windows, trees, load_usage()),
+        "sessions": sessions,
     }
 
 
@@ -223,6 +295,36 @@ def read_events(process: subprocess.Popen, messages: queue.Queue) -> None:
         messages.put(("end", process, ""))
 
 
+def read_event_errors(process: subprocess.Popen, messages: queue.Queue) -> None:
+    try:
+        assert process.stderr is not None
+        reported = False
+        while line := process.stderr.readline(281):
+            if not reported and line.strip():
+                messages.put(("stderr", process, line.strip()[:280]))
+                reported = True
+    except (OSError, ValueError):
+        pass
+
+def stop_event_process(process: subprocess.Popen) -> int | None:
+    if process.poll() is not None:
+        return process.returncode
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    try:
+        return process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            return process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return process.poll()
+
 def watch(explicit_cli: str) -> None:
     def stop(_signum, _frame):
         raise KeyboardInterrupt
@@ -234,7 +336,7 @@ def watch(explicit_cli: str) -> None:
     next_refresh = 0.0
     pending_refresh = 0.0
     last_snapshot: str | None = None
-    usage = load_usage()
+    event_warning = "Event monitor is starting"
     try:
         while True:
             now = time.monotonic()
@@ -250,16 +352,25 @@ def watch(explicit_cli: str) -> None:
 
             if events is None and now >= next_spawn:
                 try:
+                    command = [cli, "events", "--json", "--kind", EVENT_KINDS]
+                    socket = os.environ.get("AGTERM_SOCKET", "")
+                    if socket:
+                        command.extend(("--socket", socket))
                     events = subprocess.Popen(
-                        [cli, "events", "--json", "--kind", EVENT_KINDS],
-                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        command,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         text=True, bufsize=1,
                     )
                     threading.Thread(
                         target=read_events, args=(events, messages), daemon=True,
                     ).start()
-                except OSError:
+                    threading.Thread(
+                        target=read_event_errors, args=(events, messages), daemon=True,
+                    ).start()
+                    event_warning = ""
+                except OSError as exc:
                     events = None
+                    event_warning = f"Event monitor unavailable: {exc}"[:280]
                     next_spawn = now + RETRY_SECONDS
 
             if now >= next_refresh or (pending_refresh and now >= pending_refresh):
@@ -268,6 +379,7 @@ def watch(explicit_cli: str) -> None:
                 except AgtermError as exc:
                     value = {"online": False, "sessions": [], "windowCount": 0,
                              "error": str(exc)}
+                value["eventWarning"] = event_warning
                 last_snapshot = write_snapshot(value, last_snapshot)
                 next_refresh = time.monotonic() + REFRESH_INTERVAL_SECONDS
                 pending_refresh = 0.0
@@ -283,30 +395,23 @@ def watch(explicit_cli: str) -> None:
                     event = json.loads(payload)
                 except json.JSONDecodeError:
                     event = {}
-                result = event.get("result") if isinstance(event, dict) else {}
-                if isinstance(result, dict):
-                    sid = result.get("sessionId") or result.get("session_id") or result.get("id")
-                    if isinstance(sid, str) and sid:
-                        usage = record_usage(sid, usage=usage)
-                        try:
-                            save_usage(usage)
-                        except OSError:
-                            pass
-                if not pending_refresh:
-                    pending_refresh = time.monotonic() + 0.15
+                if isinstance(event, dict) and event.get("kind") in EVENT_KINDS.split(","):
+                    if not pending_refresh:
+                        pending_refresh = time.monotonic() + 0.15
+            elif kind == "stderr":
+                event_warning = f"Event monitor: {payload}"[:280]
+                pending_refresh = time.monotonic() + 0.15
             elif kind == "end":
+                exit_code = stop_event_process(process)
                 events = None
+                event_warning = f"Event monitor exited ({exit_code if exit_code is not None else 'unknown'})"[:280]
                 next_spawn = time.monotonic() + RETRY_SECONDS
                 pending_refresh = time.monotonic() + 0.15
     except (KeyboardInterrupt, BrokenPipeError):
         pass
     finally:
-        if events is not None and events.poll() is None:
-            events.terminate()
-            try:
-                events.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                events.kill()
+        if events is not None:
+            stop_event_process(events)
 
 
 def focus(cli: str, window_id: str, session_id: str) -> None:
