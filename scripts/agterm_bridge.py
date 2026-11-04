@@ -22,6 +22,7 @@ import time
 
 SORT_RANK = {"blocked": 0, "completed": 1, "active": 2, "idle": 3}
 EVENT_KINDS = "status,notify,session.created,session.closed,tree.changed"
+TITLE_SPINNER_FRAMES = frozenset("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 REFRESH_INTERVAL_SECONDS = 20
 RETRY_SECONDS = 3
 CACHE_SUBDIR = "omarchy-agterm"
@@ -144,6 +145,24 @@ def session_timestamp(session: dict) -> float:
     return 0.0
 
 
+def session_status(session: dict) -> str:
+    reported = session.get("status")
+    if reported is not None:
+        status = str(reported).lower()
+        return status if status in SORT_RANK else "idle"
+    # Read only the terminal title returned by agterm, never an editable row name,
+    # selected-session flag, or foreground executable. Explicit status wins.
+    title = session.get("title")
+    if isinstance(title, str):
+        parts = title.split(maxsplit=2)
+        if len(parts) >= 2 and (
+            (parts[0] == "π" and parts[1] in TITLE_SPINNER_FRAMES)
+            or (parts[0] in TITLE_SPINNER_FRAMES and parts[1] == "π")
+        ):
+            return "active"
+    return "idle"
+
+
 def extract_sessions(windows: list[dict], trees: dict[str, dict], usage: dict[str, float] | None = None) -> list[dict]:
     sessions: list[dict] = []
     usage_map = usage or {}
@@ -162,9 +181,7 @@ def extract_sessions(windows: list[dict], trees: dict[str, dict], usage: dict[st
                 session_id = str(session.get("id", ""))
                 if not session_id:
                     continue
-                status = str(session.get("status") or "idle").lower()
-                if status not in SORT_RANK:
-                    status = "idle"
+                status = session_status(session)
                 try:
                     unseen = int(session.get("unseen") or 0)
                 except (TypeError, ValueError):

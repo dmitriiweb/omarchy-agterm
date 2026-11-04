@@ -287,6 +287,39 @@ print(json.dumps({{"ok": True, "result": result}}))
         self.assertEqual(rows[0]["status"], "idle")
         self.assertEqual(rows[0]["lastUsedAt"], 0)
 
+    def test_agterm_spinner_title_reports_work_without_structured_status(self):
+        windows = [{"id": WIN, "open": True}]
+        for title in ("π ⠏ Integration v02", "⠋ π - Integration v02 - omp"):
+            with self.subTest(title=title):
+                trees = {WIN: {"workspaces": [{"sessions": [{
+                    "id": ID_A, "title": title, "active": False,
+                }]}]}}
+                row = bridge.extract_sessions(windows, trees, {ID_A: 100})[0]
+                self.assertEqual(row["status"], "active")
+                self.assertEqual(row["lastUsedAt"], 100)
+
+    def test_explicit_agterm_status_wins_over_spinner_title(self):
+        windows = [{"id": WIN, "open": True}]
+        for status in ("idle", "blocked", "completed", "active"):
+            with self.subTest(status=status):
+                trees = {WIN: {"workspaces": [{"sessions": [{
+                    "id": ID_A, "title": "π ⠋ Agent", "status": status,
+                }]}]}}
+                self.assertEqual(bridge.extract_sessions(windows, trees, {})[0]["status"], status)
+
+    def test_stopped_or_unrecognized_titles_do_not_report_work(self):
+        windows = [{"id": WIN, "open": True}]
+        session = {"id": ID_A, "title": "π ⠋ Agent"}
+        trees = {WIN: {"workspaces": [{"sessions": [session]}]}}
+        self.assertEqual(bridge.extract_sessions(windows, trees, {})[0]["status"], "active")
+        for title in ("π - Agent", "editor ⠋ π", "π ⠋suffix", "⠋ progress", ""):
+            with self.subTest(title=title):
+                session["title"] = title
+                self.assertEqual(bridge.extract_sessions(windows, trees, {})[0]["status"], "idle")
+        session.pop("title")
+        session["name"] = "π ⠋ custom user label"
+        self.assertEqual(bridge.extract_sessions(windows, trees, {})[0]["status"], "idle")
+
     def test_focus_rejects_cli_option_injection(self):
         with self.assertRaises(bridge.AgtermError):
             bridge.focus("agtermctl", "--socket", ID_B)

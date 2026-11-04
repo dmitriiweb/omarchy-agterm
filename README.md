@@ -4,7 +4,7 @@ An unofficial Omarchy bar plugin for [agterm-linux](https://github.com/melonamin
 
 ## Features
 
-- Shows blocked, completed, and active session counts, plus an offline indicator.
+- Shows blocked, completed, and active session counts, plus an offline indicator. Recognizes supported working-spinner titles from agterm when structured status is absent.
 - Opens a scrollable list of sessions across open agterm windows and workspaces; page sessions are excluded.
 - Shows observed recent sessions first when usage timestamps are available, with deterministic status and name tie-breaks.
 - Focuses an existing session/window; it does not create terminals or agents.
@@ -21,7 +21,7 @@ An unofficial Omarchy bar plugin for [agterm-linux](https://github.com/melonamin
 
 ### Optional OMP status reporting
 
-OMP needs its own extension to report agent lifecycle status to agterm. This adapter is opt-in and is not installed or enabled by the plugin installer:
+For explicit OMP lifecycle status in agterm's structured `status` field, this optional adapter can be installed manually. It is not needed for the working-spinner title fallback and is not installed or enabled by the plugin installer:
 
 ```bash
 install -D -m 0644 integrations/omp-agterm-status.ts \
@@ -108,7 +108,8 @@ Both commands ask for confirmation; add `--yes` only for deliberate automation. 
 - From a repository checkout, inspect a snapshot with `python3 scripts/agterm_bridge.py snapshot`.
 - The bridge reads local window, workspace, and agent status data through `agtermctl`. It stores usage timestamps in `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-agterm/usage.json`; event monitoring also takes a safety snapshot every 20 seconds. Snapshot/data errors and event-monitor errors are reported separately; partial tree failures preserve rows from readable windows.
 - The plugin runtime makes no network requests. GitHub access is used by Git-based installation and updates, not by the running plugin.
-- The plugin displays statuses already reported by agterm. OMP status reporting is an explicit manual extension install described above. The plugin and installer never copy extensions, enable hooks, or alter OMP configuration automatically.
+- Explicit agterm `status` values always win. When absent, the bridge recognizes terminal titles beginning with `π <braille-spinner>` or `<braille-spinner> π` as Working. It reads `title`, not a custom session name, selection, or foreground process. Removing the spinner returns the row to Idle; the title fallback cannot establish Blocked or Done. Title changes are observed on event-triggered or safety snapshots and can remain stale if an application leaves an old title behind.
+- Structured lifecycle reporting remains available through the explicit manual OMP adapter install above. The plugin and installer never copy extensions, enable hooks, or alter OMP configuration automatically.
 
 ## Development
 

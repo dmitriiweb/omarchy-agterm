@@ -68,7 +68,8 @@ elif args[0] == "tree":
     if state.get("treeFailure"):
         fail("test window tree unavailable")
     result = {"tree": {"workspaces": [{"id": "work", "name": "work", "sessions": [
-        {"id": state["session"], "status": state.get("status", "idle"), "active": True},
+        {"id": state["session"], "title": state.get("title", ""), "active": True,
+         **({"status": state["status"]} if "status" in state else {})},
         {"id": state["other"], "status": "idle", "active": False}
     ]}]}}
 elif args[:2] == ["session", "select"]:
@@ -225,6 +226,19 @@ class BridgeProcessTests(unittest.TestCase):
         self.write_state(eventFailure=False, status="completed")
         recovered = self.await_snapshot(messages, lambda value: value["online"] and not value.get("eventWarning") and value["sessions"][0]["status"] == "completed")
         self.assertEqual(recovered["error"], "")
+
+    def test_watch_tracks_title_activity_without_status_or_recency_writes(self):
+        self.write_state(title="π ⠋ Agent", eventKind="tree.changed")
+        _, messages = self.start_watch()
+        self.await_snapshot(messages, lambda value: value["online"] and value["sessions"][0]["status"] == "active")
+        initial_usage = self.read_usage()[SESSION]
+        self.write_state(title="π - Agent")
+        stopped = self.await_snapshot(messages, lambda value: value["online"] and all(row["status"] == "idle" for row in value["sessions"]))
+        self.assertEqual({row["id"]: row["status"] for row in stopped["sessions"]},
+                         {SESSION: "idle", OTHER: "idle"})
+        self.write_state(title="π ⠏ Agent", status="blocked")
+        self.await_snapshot(messages, lambda value: value["online"] and value["sessions"][0]["status"] == "blocked")
+        self.assertEqual(self.read_usage()[SESSION], initial_usage)
 
     def test_concurrent_stale_cache_writer_cannot_erase_newer_focus(self):
         # First writer pauses after reading the cache inside its exclusive lock.
