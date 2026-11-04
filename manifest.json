@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "id": "dmitriiweb.agterm",
+  "name": "agterm for Omarchy",
+  "version": "0.1.2",
+  "author": "Community",
+  "license": "MIT",
+  "description": "agterm-linux coding agent status, session dashboard and one-click focus in Omarchy's bar.",
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "agterm",
+    "description": "Monitor all agterm workspaces and jump to the agent needing attention.",
+    "category": "AI",
+    "aliases": ["agterm", "agterm-linux", "agents", "terminal"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "cliPath": "",
+      "showIdle": true,
+      "showIcon": true
+    },
+    "schema": [
+      {
+        "key": "cliPath",
+        "type": "path",
+        "label": "agtermctl path",
+        "defaultValue": "",
+        "description": "Optional absolute path. Empty uses agtermctl on PATH or standard Linux install locations."
+      },
+      {
+        "key": "showIdle",
+        "type": "boolean",
+        "label": "Show idle sessions",
+        "defaultValue": true,
+        "description": "Include sessions without an active agent in the popup."
+      },
+      {
+        "key": "showIcon",
+        "type": "boolean",
+        "label": "Show agterm icon",
+        "defaultValue": true
+      }
+    ]
+  }
+}
