@@ -101,7 +101,7 @@ Panel {
     watcher.running = false
     restartTimer.restart()
   }
-  function focus(session) {
+  function focusSession(session) {
     if (focusProcess.running || !session || !session.windowId || !session.id) return
     focusError = ""
     focusStderr = ""
@@ -110,7 +110,7 @@ Panel {
     focusProcess.running = true
   }
   function focusAttention() {
-    if (sessions.length > 0) focus(sessions[0])
+    if (sessions.length > 0) focusSession(sessions[0])
   }
 
   Process {
@@ -122,7 +122,6 @@ Panel {
       }
     }
     onExited: function(exitCode) {
-      root.focusProcess.running = false
       if (exitCode === 0) {
         root.close()
         root.refresh()
@@ -380,7 +379,7 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.focus(item.modelData)
+                  onClicked: root.focusSession(item.modelData)
                 }
               }
             }
