@@ -2,6 +2,8 @@
 
 An unofficial Omarchy bar plugin for [agterm-linux](https://github.com/melonamin/agterm-linux) that shows agent status across open agterm workspaces and lets you focus an existing session. It is not affiliated with or endorsed by the Omarchy or agterm-linux projects.
 
+[![agterm plugin preview](preview.png)](preview.png)
+
 ## Features
 
 - Horizontal-bar and popup summaries for Working, Blocked (needs attention), and Done (finished), plus an offline indicator. Vertical bars show the icon and offline indicator rather than numeric bar counts.
