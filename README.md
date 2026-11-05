@@ -4,7 +4,7 @@ An unofficial Omarchy bar plugin for [agterm-linux](https://github.com/melonamin
 
 ## Features
 
-- Shows blocked, completed, and active session counts, plus an offline indicator. Recognizes supported working-spinner titles from agterm when structured status is absent.
+- Horizontal-bar and popup summaries for Working, Blocked (needs attention), and Done (finished), plus an offline indicator. Vertical bars show the icon and offline indicator rather than numeric bar counts.
 - Opens a scrollable list of sessions across open agterm windows and workspaces; page sessions are excluded.
 - Shows observed recent sessions first when usage timestamps are available, with deterministic status and name tie-breaks.
 - Focuses an existing session/window; it does not create terminals or agents.
@@ -12,25 +12,46 @@ An unofficial Omarchy bar plugin for [agterm-linux](https://github.com/melonamin
 - Uses supported agterm events with a 20-second safety snapshot and keeps its usage cache locally.
 - Makes no network requests at runtime. The plugin and installer do not modify agterm or OMP configuration.
 
+## Status sources and limits
+
+The widget reads agterm's session data; it does not inspect agent conversations or independently detect agent lifecycle events.
+
+| Display | Available status source |
+| --- | --- |
+| Working | Explicit agterm `active` status, or a recognized spinner in the terminal title when structured status is absent. |
+| Blocked / needs attention | Explicit agterm `blocked` status. A spinner title alone cannot identify an approval or input wait. |
+| Done / finished | Explicit agterm `completed` status. A spinner stopping does not establish completion. |
+| Idle | Explicit `idle`, an unrecognized status, or no recognized activity signal. This is not proof that no agent is running. |
+
+The title fallback recognizes only `π <frame>` or `<frame> π` at the beginning of agterm's `title`, with frames from `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`. Explicit status takes precedence. Custom session names, selection flags, and foreground processes are not activity signals. Title changes are observed on event-triggered or 20-second safety snapshots; an old title left behind by an application can remain stale.
+
+Counts are per terminal session, not detected main-agent processes. Workers and splits within one session do not add rows; multiple agents sharing one session are not counted separately. A session has one aggregate agterm status, so a waiting split can mark that session as needing attention. The plugin has no independent split/scratch-pane chooser.
+
+
 ## Requirements
 
 - Omarchy with native Quickshell/Quattro plugin support, normally Omarchy 4.x. Older Omarchy compatibility is not claimed.
-- Native agterm-linux, with `agtermctl window list --json` working.
+- Native agterm-linux with working `window list`, `tree`, `events`, `session select`, and `window select` commands. The exercised Linux build is `0.33.1+linux.1`; compatibility with every older release is not established.
 - Python 3.10+ available as `python3`.
 - Git for Git-based installation. Omarchy's plugin tooling also uses `jq`.
 
-### Optional OMP status reporting
+### Optional OMP adapter — live integration unverified
 
-For explicit OMP lifecycle status in agterm's structured `status` field, this optional adapter can be installed manually. It is not needed for the working-spinner title fallback and is not installed or enabled by the plugin installer:
+`integrations/omp-agterm-status.ts` provides an opt-in adapter for OMP lifecycle callbacks. Its callback behavior is tested with a simulated OMP context; real OMP-to-agterm hook delivery has not been verified. It is not required for the title-based Working fallback, and it is not installed or enabled by the plugin installer.
+
+Prerequisites: a compatible OMP extension API, an executable agterm status wrapper at `~/.config/agterm/agent-status/agterm-agent-status.sh` (or `AGTERM_STATUS_COMMAND`), and a working current `agtermctl`. The wrapper is not supplied by this repository. Installing the adapter alone does not install or repair it. For custom OMP profiles or agent directories, use that runtime's actual extension-loading directory.
 
 ```bash
-install -D -m 0644 integrations/omp-agterm-status.ts \
-  "${HOME}/.omp/agent/extensions/agterm-status.ts"
+# Refuse to overwrite an existing adapter; review/back it up separately.
+test ! -e "${HOME}/.omp/agent/extensions/agterm-status.ts" &&
+  test ! -L "${HOME}/.omp/agent/extensions/agterm-status.ts" &&
+  install -D -m 0644 integrations/omp-agterm-status.ts \
+    "${HOME}/.omp/agent/extensions/agterm-status.ts"
 ```
 
 The adapter invokes `~/.config/agterm/agent-status/agterm-agent-status.sh` using OMP's argument-array process API. It sets `AGTERMCTL` to `AGTERM_STATUS_CLI` or `agtermctl` on `PATH`, overriding any stale CLI path baked into an older wrapper. Set `AGTERM_STATUS_COMMAND` or `AGTERM_STATUS_CLI` in the OMP launch environment when the defaults do not match your installation. Restart OMP after installing or changing the extension.
 
-Only the root OMP agent reports. Agent work reports active; explicit approval and `ask` waits report blocked; resolution resumes active; final settlement reports completed; shutdown clears to idle. Ordinary tool calls do not mean blocked. Agent workers and OMP sessions outside agterm are left untouched. Status reporting errors are suppressed so they cannot fail an agent turn.
+The intended mapping is work → active, approval/`ask` waits → blocked, resolution → active, final settlement → completed, and shutdown → idle. Ordinary tool calls do not mean blocked. The adapter suppresses contexts identified as `ctx.agent.kind === "sub"` and does nothing without `AGTERM_SESSION_ID`; it is not a general worker-process detector. Completion uses agterm's `--auto-reset`, so visiting that session can clear Done back to Idle. Reporting failures are swallowed and may produce no visible status; verify delivery before relying on this integration.
 
 Pi integrations use Pi's own extension-loading directory and API; this adapter is specifically for OMP. Do not install it into Pi's extension directory. The adapter does not repair or replace other agent integrations.
 
@@ -67,9 +88,11 @@ cd omarchy-agterm
 ./install.sh
 ```
 
-The installer targets `${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/dmitriiweb.agterm`, refuses to overwrite an existing directory, validates the manifest, rescans plugins, and enables the plugin. If validation fails, the copied files remain at the destination for inspection. It attempts to place the plugin after `omarchy.agents`; that placement only applies when the reference widget exists.
+The installer targets `${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/dmitriiweb.agterm`, refuses to overwrite an existing directory, validates the manifest, rescans plugins, and attempts to enable the plugin. If validation or activation fails, the copied files remain for inspection. It attempts to place the plugin after `omarchy.agents`; this can move its bar position and only applies when the reference widget exists. Non-default XDG configuration discovery depends on the installed Omarchy version.
 
-This copy workflow has no Git-based `omarchy plugin update` path. To update it, back up or move the existing destination directory before rerunning the installer. The installer will not overwrite it.
+Plugin discovery is asynchronous. If activation reports that `dmitriiweb.agterm` is unknown after copying, allow discovery to finish, then run `omarchy-shell shell rescanPlugins` and `omarchy plugin enable dmitriiweb.agterm`.
+
+This copy workflow has no Git-based `omarchy plugin update` path. To update it, back up or move the existing destination directory before rerunning the installer. The installer does not update in place or preserve bar placement for you; reapply the desired placement/settings as needed.
 
 ## Configuration
 
@@ -90,7 +113,6 @@ Configure these values in Omarchy's bar plugin settings:
 
 The popup sorts by recency descending, then selected state, status (blocked, completed, active, idle), status-change time descending, and name. The attention action uses the bridge's separate status-first ordering. Page sessions are omitted. Usage is recorded after successful plugin focus; external selection is noticed only when a snapshot observes the changed selected session, so rapid selection changes between snapshots cannot be reconstructed.
 
-Counts are per agterm session, not per worker process. Separate main agents in separate terminal sessions count separately; splits and workers within one session do not add rows. A session has one aggregate agterm status, so a waiting split can mark that session as needing attention.
 
 ## Updates and removal
 
@@ -101,7 +123,7 @@ omarchy plugin update dmitriiweb.agterm
 omarchy plugin remove dmitriiweb.agterm
 ```
 
-Both commands ask for confirmation; add `--yes` only for deliberate automation. Removal deletes the installed Git checkout, including local edits. Plugin changes are rescanned/hot-reloaded; a shell restart is not required.
+An update that changes the installed checkout asks for confirmation; an already up-to-date checkout does not. Removal also asks for confirmation. Add `--yes` only for deliberate automation. Removing a Git install deletes the installed checkout, including local edits. The inspected Omarchy version moves a non-Git copy to a backup instead; do not assume the same removal behavior across versions. Plugin changes are rescanned/hot-reloaded without a full shell restart. After an in-place bridge replacement, right-click the widget to restart its monitor if it has not reloaded.
 
 ## Troubleshooting and privacy
 
@@ -110,8 +132,8 @@ Both commands ask for confirmation; add `--yes` only for deliberate automation. 
 - From a repository checkout, inspect a snapshot with `python3 scripts/agterm_bridge.py snapshot`.
 - The bridge reads local window, workspace, and agent status data through `agtermctl`. It stores usage timestamps in `${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-agterm/usage.json`; event monitoring also takes a safety snapshot every 20 seconds. Snapshot/data errors and event-monitor errors are reported separately; partial tree failures preserve rows from readable windows.
 - The plugin runtime makes no network requests. GitHub access is used by Git-based installation and updates, not by the running plugin.
-- Explicit agterm `status` values always win. When absent, the bridge recognizes terminal titles beginning with `π <braille-spinner>` or `<braille-spinner> π` as Working. It reads `title`, not a custom session name, selection, or foreground process. Removing the spinner returns the row to Idle; the title fallback cannot establish Blocked or Done. Title changes are observed on event-triggered or safety snapshots and can remain stale if an application leaves an old title behind.
-- Structured lifecycle reporting remains available through the explicit manual OMP adapter install above. The plugin and installer never copy extensions, enable hooks, or alter OMP configuration automatically.
+- See [Status sources and limits](#status-sources-and-limits) before interpreting Idle or expecting Blocked/Done from title detection. A missing lifecycle report is not a widget-side indication that work has stopped.
+- The optional OMP adapter is a separate, unverified-live integration described above. The plugin and installer never copy extensions, enable hooks, or alter OMP configuration automatically.
 
 ## Development
 
@@ -156,9 +178,9 @@ AGTERM_E2E=1 AGTERM_E2E_NATIVE=1 PYTHONDONTWRITEBYTECODE=1 \
   python3 -m unittest discover -s tests -p '*e2e.py' -v
 ```
 
-Keep `AGTERM_SOCKET` and `AGTERM_WINDOW_ID` set explicitly. The normal regression suite skips these tests unless opted in. E2E bridge configuration/cache use temporary directories. The native harness limits its view to fixture session IDs so unrelated user activity cannot change expected counts. Its test-only IPC invokes the real widget attention handler; it does not inject global keyboard events or prove physical Enter/mouse delivery. Attention testing briefly selects a test session and restores the previous selection. Test sessions and their workspace are removed on success or failure.
+Keep `AGTERM_SOCKET` and `AGTERM_WINDOW_ID` set explicitly. The normal regression suite skips these tests unless opted in. E2E bridge configuration/cache use temporary directories. The native harness renders the checkout's widget, not the installed bar copy, and limits its view to fixture session IDs so unrelated activity cannot change expected counts. Its test-only IPC invokes the real attention handler and asserts the selected session UUID; it does not prove physical Enter/mouse delivery, wheel/keyboard scrolling, vertical-bar behavior, or cross-window focus. It briefly selects a test session and attempts to restore the recorded selection. Normal completion and Python failures run UUID-scoped fixture cleanup; interruption, forced termination, or an unavailable agterm can leave test resources behind, and cleanup errors are reported.
 
-The mixed-state scenario is two Working, one Blocked (needs attention), one Done (finished), and one Idle. Tests cover work → attention → resumed work → done → idle, event-driven refresh, attention ordering independent of popup recency, one-row-per-session behavior with a split pane, and a closed-session focus failure remaining visible in the popup.
+The mixed-state scenario is two Working, one Blocked (needs attention), one Done (finished), and one Idle. Sleeping test commands and explicit `session status` writes synthesize these states; the tests do not run model agents or real approval/completion hooks. Coverage includes work → attention → resumed work → done → idle, event-driven refresh, recency-independent attention ordering, one-row-per-session behavior with a split, and a closed-session focus failure remaining visible.
 
 See [AGENTS.md](AGENTS.md) for contributor checks and safety constraints.
 
