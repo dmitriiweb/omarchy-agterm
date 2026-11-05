@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dmitriiweb.agterm",
   "name": "agterm for Omarchy",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "Community",
   "license": "MIT",
   "description": "agterm-linux coding agent status, session dashboard and one-click focus in Omarchy's bar.",
