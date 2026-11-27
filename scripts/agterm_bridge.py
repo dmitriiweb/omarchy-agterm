@@ -25,6 +25,7 @@ EVENT_KINDS = "status,notify,session.created,session.closed,tree.changed"
 TITLE_SPINNER_FRAMES = frozenset("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 REFRESH_INTERVAL_SECONDS = 20
 RETRY_SECONDS = 3
+EVENT_DEBOUNCE_SECONDS = 0.15
 CACHE_SUBDIR = "omarchy-agterm"
 CACHE_FILE = "usage.json"
 
@@ -385,6 +386,8 @@ def watch(explicit_cli: str) -> None:
                         target=read_event_errors, args=(events, messages), daemon=True,
                     ).start()
                     event_warning = ""
+                    # A replacement stream can stay quiet after reconnecting.
+                    next_refresh = min(next_refresh, time.monotonic() + EVENT_DEBOUNCE_SECONDS)
                 except OSError as exc:
                     events = None
                     event_warning = f"Event monitor unavailable: {exc}"[:280]
@@ -398,7 +401,8 @@ def watch(explicit_cli: str) -> None:
                              "error": str(exc)}
                 value["eventWarning"] = event_warning
                 last_snapshot = write_snapshot(value, last_snapshot)
-                next_refresh = time.monotonic() + REFRESH_INTERVAL_SECONDS
+                interval = REFRESH_INTERVAL_SECONDS if value["online"] else RETRY_SECONDS
+                next_refresh = time.monotonic() + interval
                 pending_refresh = 0.0
 
             try:
@@ -414,16 +418,16 @@ def watch(explicit_cli: str) -> None:
                     event = {}
                 if isinstance(event, dict) and event.get("kind") in EVENT_KINDS.split(","):
                     if not pending_refresh:
-                        pending_refresh = time.monotonic() + 0.15
+                        pending_refresh = time.monotonic() + EVENT_DEBOUNCE_SECONDS
             elif kind == "stderr":
                 event_warning = f"Event monitor: {payload}"[:280]
-                pending_refresh = time.monotonic() + 0.15
+                pending_refresh = time.monotonic() + EVENT_DEBOUNCE_SECONDS
             elif kind == "end":
                 exit_code = stop_event_process(process)
                 events = None
                 event_warning = f"Event monitor exited ({exit_code if exit_code is not None else 'unknown'})"[:280]
                 next_spawn = time.monotonic() + RETRY_SECONDS
-                pending_refresh = time.monotonic() + 0.15
+                pending_refresh = time.monotonic() + EVENT_DEBOUNCE_SECONDS
     except (KeyboardInterrupt, BrokenPipeError):
         pass
     finally:
