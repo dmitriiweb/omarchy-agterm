@@ -55,7 +55,7 @@ if args[0] == "events":
         state = json.loads(state_path.read_text())
         if state.get("eventFailure"):
             fail("events temporarily unavailable")
-        if revision != state.get("revision", 0):
+        if not state.get("quietEvents") and revision != state.get("revision", 0):
             revision = state.get("revision", 0)
             print(json.dumps({"kind": state.get("eventKind", "tree.changed"),
                               "session": state["session"], "payload": {}}), flush=True)
@@ -223,9 +223,27 @@ class BridgeProcessTests(unittest.TestCase):
         degraded = self.await_snapshot(messages, lambda value: value.get("eventWarning") and value["online"])
         self.assertEqual(degraded["sessions"][0]["id"], SESSION)
         self.assertEqual(degraded["sessions"][0]["status"], "blocked")
-        self.write_state(eventFailure=False, status="completed")
+        self.write_state(eventFailure=False, quietEvents=True, status="completed")
         recovered = self.await_snapshot(messages, lambda value: value["online"] and not value.get("eventWarning") and value["sessions"][0]["status"] == "completed")
         self.assertEqual(recovered["error"], "")
+
+    def test_watch_recovers_after_event_stream_drops_and_reconnects_quietly(self):
+        _, messages = self.start_watch()
+        self.await_snapshot(messages, lambda value: value["online"])
+
+        drop_requested = time.monotonic()
+        self.write_state(offline=True, eventFailure=True, quietEvents=True)
+        self.await_snapshot(messages, lambda value: not value["online"] and value.get("eventWarning"))
+
+        # The replacement stream is quiet, and snapshot requests still fail at first.
+        self.write_state(eventFailure=False)
+        self.await_snapshot(messages, lambda value: not value["online"] and value.get("eventWarning") == "")
+        self.assertGreaterEqual(time.monotonic() - drop_requested, bridge.RETRY_SECONDS,
+                                "Event stream reconnected before its retry delay")
+
+        self.write_state(offline=False, status="completed")
+        self.await_snapshot(messages, lambda value: value["online"] and not value.get("eventWarning")
+                            and value["sessions"][0]["status"] == "completed")
 
     def test_watch_tracks_title_activity_without_status_or_recency_writes(self):
         self.write_state(title="π ⠋ Agent", eventKind="tree.changed")
